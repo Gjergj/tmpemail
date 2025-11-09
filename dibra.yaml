@@ -1,0 +1,38 @@
+secrets:
+  adapter: bitwarden
+  list:
+    HOST_PASSWORD: tmpemail.xyz_secrets/password
+    HOST: tmpemail.xyz_secrets/host
+    HOST_PORT: tmpemail.xyz_secrets/port
+    HOST_USER: tmpemail.xyz_secrets/user
+
+inventory:
+  real_vps:
+    tmpemail.xyz:
+      host: ${HOST}
+      user: ${HOST_USER}
+      port: ${HOST_PORT}
+      password: ${HOST_PASSWORD}
+      timeout: 30
+
+tasks:
+  - hosts:
+      - tmpemail.xyz
+    systemd:
+      operation: reload
+      name: caddy
+    artifacts:
+      - type: put
+        content: >-
+          tmpemail.xyz {
+            header Content-Type text/html
+            respond <<HTML
+              <html>
+                <head><title>tmpemail.xyz</title></head>
+                <body><a href="https://tmpemail.xyz">tmpemail.xyz</a></body>
+              </html>
+              HTML 200
+          }
+        destination: /etc/caddy/Caddyfile
+        constraints:
+          force: true
