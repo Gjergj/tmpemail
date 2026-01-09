@@ -1,0 +1,24 @@
+See if we have stack with the plan we made earlier in distributed-pondering-platypus.md
+
+See if we can make improvements in overall architecture. Don't act, let's plan first. ultrathink
+
+See what improvements we can make to this service. Don't act, let's plan first. ultrathink
+
+See what improvements we can make to this app.  ultrathink
+
+
+ start all services and test it
+
+
+
+  21. No Admin Dashboard
+
+  - Can't see system stats
+  - Can't see active addresses
+  - Can't see storage usage
+
+  22. No Docker/Containerization
+
+  - Manual setup required
+  - No docker-compose for local dev
+  - Not cloud-native

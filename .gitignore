@@ -30,3 +30,14 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local development data
+api/data/
+email-service/data/
+email-service/mail/
+
+# Built binaries
+api/tmpemail-api
+api/tmpemail-api-*
+email-service/tmpemail-email-service
+email-service/tmpemail-email-service-*

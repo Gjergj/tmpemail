@@ -18,12 +18,10 @@ inventory:
 tasks:
   - hosts:
       - tmpemail.xyz
+    name: caddy
     systemd:
       operation: reload
       name: caddy
-    systemd:
-      operation: reload
-      name: postfix
     artifacts:
       - type: put
         content: >-
@@ -39,6 +37,49 @@ tasks:
         destination: /etc/caddy/Caddyfile
         constraints:
           force: true
+  - hosts:
+      - tmpemail.xyz
+    artifacts:
+      - type: put
+        source: api/tmpemail-api-linux-amd64
+        destination: /root/tmpemail-api
+        constraints:
+          force: true
+          executable: true
+      - type: put
+        content: |
+          #!/bin/bash
+          # Script to forward received emails to the API
+          # This script reads the email from stdin and posts it to the API
+          
+          API_URL="http://localhost:8080/receive-email"
+          EMAIL_DATA=$(cat)
+          
+          # Extract basic email headers
+          TO=$(echo "$EMAIL_DATA" | grep -m1 "^To:" | sed 's/^To: //')
+          FROM=$(echo "$EMAIL_DATA" | grep -m1 "^From:" | sed 's/^From: //')
+          SUBJECT=$(echo "$EMAIL_DATA" | grep -m1 "^Subject:" | sed 's/^Subject: //')
+          
+          # Create JSON payload
+          JSON_PAYLOAD=$(jq -n \
+            --arg to "$TO" \
+            --arg from "$FROM" \
+            --arg subject "$SUBJECT" \
+            --arg raw "$EMAIL_DATA" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{to: $to, from: $from, subject: $subject, raw_email: $raw, timestamp: $timestamp}')
+          
+          # Post to API
+          curl -s -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD" \
+            >> /var/log/tmpemail-forward.log 2>&1
+          
+          exit 0
+        destination: /root/tmpemail-forward.sh
+        constraints:
+          force: true
+          executable: true
       - type: put
         content: |
           smtp      inet  n       -       y       -       -       smtpd
@@ -77,6 +118,10 @@ tasks:
           anvil     unix  -       -       y       -       1       anvil
           scache    unix  -       -       y       -       1       scache
           postlog   unix-dgram n  -       n       -       1       postlogd
+          
+          # Pipe transport to forward emails to API
+          tmpemail-forward unix - n n - - pipe
+            flags=DRhu user=root argv=/root/tmpemail-forward.sh
         destination: /etc/postfix/master.cf
         constraints:
           force: true
@@ -94,18 +139,20 @@ tasks:
           # Receive only - disable sending
           default_transport = error
           relay_transport = error
-          # Virtual mailbox settings
+          
+          # Virtual domain and mailbox settings
           virtual_mailbox_domains = /etc/postfix/virtual_domains
           virtual_mailbox_maps = hash:/etc/postfix/virtual_mailbox
           virtual_mailbox_base = /var/mail/vmail
           virtual_uid_maps = static:5000
           virtual_gid_maps = static:5000
-          # Use Maildir format
-          virtual_mailbox_limit = 0
-          virtual_mailbox_limit_maps = hash:/etc/postfix/virtual_mailbox_limit
-          virtual_mailbox_limit_override = yes
-          mailbox_size_limit = 0
-          virtual_mailbox_extended = yes
+          
+          # BCC specific recipients to API
+          recipient_bcc_maps = hash:/etc/postfix/recipient_bcc
+          
+          # Transport routing for API trigger
+          transport_maps = hash:/etc/postfix/transport
+          
           # Disable local delivery
           local_transport = error:local delivery disabled
           local_recipient_maps =
@@ -134,8 +181,33 @@ tasks:
           force: true
       - type: put
         content: |
-          redacted@tmpemail.xyz tmpemail.xyz/redacted/
+          # Only accept test_123@tmpemail.xyz and store in mailbox
+          test_123@tmpemail.xyz tmpemail.xyz/test_123/
         destination: /etc/postfix/virtual_mailbox
         constraints:
           force: true
-          
+      - type: command
+        command: postmap /etc/postfix/virtual_mailbox
+      - type: put
+        content: |
+          # BCC test_123 to API trigger
+          test_123@tmpemail.xyz api-trigger@tmpemail.xyz
+        destination: /etc/postfix/recipient_bcc
+        constraints:
+          force: true
+      - type: command
+        command: postmap /etc/postfix/recipient_bcc
+      - type: put
+        content: |
+          # Route API trigger to pipe transport
+          api-trigger@tmpemail.xyz tmpemail-forward:
+        destination: /etc/postfix/transport
+        constraints:
+          force: true
+      - type: command
+        command: postmap /etc/postfix/transport
+  - hosts:
+      - tmpemail.xyz
+    systemd:
+      operation: reload
+      name: postfix
