@@ -41,3 +41,5 @@ api/tmpemail-api
 api/tmpemail-api-*
 email-service/tmpemail-email-service
 email-service/tmpemail-email-service-*
+email-service/mail/
+email-service/certs/

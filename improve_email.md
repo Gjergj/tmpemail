@@ -59,7 +59,4 @@
 
 
 1. Disk Exhaustion (DoS)
-  Rate limiting at SMTP level (currently none)
-
-
-No SPF/DKIM/DMARC validation (accepts mail from any sender)
+  - Rate limiting at SMTP level (currently none)

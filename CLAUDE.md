@@ -184,6 +184,7 @@ make run         # Build and run locally
 make build-linux # Build for Linux deployment
 make build-all   # Build for all platforms
 make deps        # Install/update dependencies
+make gen-certs   # Generate self-signed TLS certificate for development
 ```
 
 **Environment Variables:**
@@ -193,6 +194,13 @@ make deps        # Install/update dependencies
 - `TMPEMAIL_STORAGE_PATH` - Email storage (default: `./mail`)
 - `TMPEMAIL_API_URL` - API Service URL (default: `http://localhost:8080`)
 - `TMPEMAIL_MAX_EMAIL_SIZE` - Max email size in bytes (default: `20971520` = 20MB)
+- `TMPEMAIL_TLS_ENABLED` - Enable STARTTLS support (default: `false`)
+- `TMPEMAIL_TLS_CERT_PATH` - Path to TLS certificate file (default: `./certs/smtp.crt`)
+- `TMPEMAIL_TLS_KEY_PATH` - Path to TLS private key file (default: `./certs/smtp.key`)
+- `TMPEMAIL_VALIDATE_SPF` - Enable SPF validation (default: `false`)
+- `TMPEMAIL_VALIDATE_DKIM` - Enable DKIM signature verification (default: `false`)
+- `TMPEMAIL_VALIDATE_DMARC` - Enable DMARC policy checking (default: `false`)
+- `TMPEMAIL_AUTH_POLICY` - Policy for failed validation: `none` (log only) or `reject` (default: `none`)
 
 **Health Check Endpoints** (on TMPEMAIL_HEALTH_PORT):
 - `GET /health` - Liveness check (returns ok if server is running)
@@ -258,11 +266,77 @@ QUIT
 
 **Using swaks:**
 ```bash
-swaks --to your-generated-address@tmpemail.xyz \
+ swaks --to bright-dolphin-873008@tmpemail.xyz \
       --from test@example.com \
       --server localhost:2525 \
-      --body "Test email body"
+      --body "Test email body" \
+      --header "Subject: Test from swaks"
 ```
+
+## TLS/STARTTLS Setup
+
+The Email Service supports STARTTLS for encrypted email transmission.
+
+**Generate self-signed certificate (for development):**
+```bash
+cd email-service
+make gen-certs
+```
+
+**Enable TLS:**
+```bash
+TMPEMAIL_TLS_ENABLED=true make run
+```
+
+**Test STARTTLS:**
+```bash
+# Using openssl
+openssl s_client -starttls smtp -connect localhost:2525
+
+# Using swaks with TLS
+swaks --to bright-dolphin-873008@tmpemail.xyz \
+      --from test@example.com \
+      --server localhost:2525 \
+      --tls \
+      --body "Test email body" \
+      --header "Subject: Test from swaks with STARTTLS"
+
+The --tls flag tells swaks to use STARTTLS. For self-signed certificates, you may need to add --tls-verify to skip certificate verification:
+swaks --to bright-dolphin-873008@tmpemail.xyz \
+      --from test@example.com \
+      --server localhost:2525 \
+      --tls \
+      --tls-verify \
+      --body "Test email body" \
+      --header "Subject: Test from swaks with STARTTLS"
+```
+
+**Note:** Self-signed certificates work for development and internal use. For production with Gmail/Yahoo/Outlook delivery, use a valid certificate from Let's Encrypt or another CA.
+
+## Email Authentication (SPF/DKIM/DMARC)
+
+The Email Service supports validation of incoming emails using SPF, DKIM, and DMARC.
+
+| Protocol | What It Validates |
+|----------|-------------------|
+| **SPF** | Sender's IP is authorized by the domain's DNS |
+| **DKIM** | Email signature matches the domain's public key |
+| **DMARC** | Combines SPF + DKIM results with domain policy |
+
+**Enable validation:**
+```bash
+TMPEMAIL_VALIDATE_SPF=true \
+TMPEMAIL_VALIDATE_DKIM=true \
+TMPEMAIL_VALIDATE_DMARC=true \
+TMPEMAIL_AUTH_POLICY=none \
+make run
+```
+
+**Policies:**
+- `none` - Log validation results but accept all emails (default)
+- `reject` - Reject emails that fail validation
+
+**Note:** For local development, most emails will fail SPF validation since they're not sent from authorized servers. Use `TMPEMAIL_AUTH_POLICY=none` during development.
 
 ## Key Technical Details
 
@@ -297,6 +371,8 @@ swaks --to your-generated-address@tmpemail.xyz \
 | `github.com/emersion/go-smtp` | SMTP server |
 | `github.com/jhillyerd/enmime` | Robust MIME email parsing |
 | `github.com/oklog/ulid/v2` | ULID generation |
+| `github.com/emersion/go-msgauth` | DKIM/DMARC validation |
+| `blitiri.com.ar/go/spf` | SPF validation |
 
 ### Frontend
 | Package | Purpose |

@@ -5,6 +5,9 @@ BINARY_NAME=tmpemail-email-service
 
 # Local development paths (shared with API service)
 DEV_STORAGE_PATH=../api/data/mail
+TMPEMAIL_TLS_ENABLED=true
+TMPEMAIL_TLS_CERT_PATH=./certs/smtp.crt
+TMPEMAIL_TLS_KEY_PATH=./certs/smtp.key
 
 # Build the application
 build:
@@ -18,6 +21,9 @@ run: build
 dev: build
 	@mkdir -p $(DEV_STORAGE_PATH)
 	TMPEMAIL_STORAGE_PATH=$(DEV_STORAGE_PATH) \
+	TMPEMAIL_TLS_ENABLED=$(TMPEMAIL_TLS_ENABLED) \
+	TMPEMAIL_TLS_CERT_PATH=$(TMPEMAIL_TLS_CERT_PATH) \
+	TMPEMAIL_TLS_KEY_PATH=$(TMPEMAIL_TLS_KEY_PATH) \
 	./$(BINARY_NAME)
 
 # Clean build artifacts

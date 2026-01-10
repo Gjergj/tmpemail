@@ -27,6 +27,12 @@ type Config struct {
 	TLSEnabled  bool   // Enable TLS/STARTTLS
 	TLSCertPath string // Path to TLS certificate file
 	TLSKeyPath  string // Path to TLS private key file
+
+	// Email Authentication (SPF/DKIM/DMARC)
+	ValidateSPF   bool   // Enable SPF validation
+	ValidateDKIM  bool   // Enable DKIM signature verification
+	ValidateDMARC bool   // Enable DMARC policy checking
+	AuthPolicy    string // Policy for failed validation: "none" (log only), "reject" (reject email)
 }
 
 // Load loads configuration from environment variables with defaults
@@ -41,6 +47,10 @@ func Load() *Config {
 		TLSEnabled:    getBoolEnv("TMPEMAIL_TLS_ENABLED", false),
 		TLSCertPath:   getEnv("TMPEMAIL_TLS_CERT_PATH", "./certs/smtp.crt"),
 		TLSKeyPath:    getEnv("TMPEMAIL_TLS_KEY_PATH", "./certs/smtp.key"),
+		ValidateSPF:   getBoolEnv("TMPEMAIL_VALIDATE_SPF", false),
+		ValidateDKIM:  getBoolEnv("TMPEMAIL_VALIDATE_DKIM", false),
+		ValidateDMARC: getBoolEnv("TMPEMAIL_VALIDATE_DMARC", false),
+		AuthPolicy:    getEnv("TMPEMAIL_AUTH_POLICY", "none"), // "none" or "reject"
 	}
 }
 

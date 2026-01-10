@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,9 @@ import (
 	"syscall"
 	"time"
 
+	"blitiri.com.ar/go/spf"
+	"github.com/emersion/go-msgauth/dkim"
+	"github.com/emersion/go-msgauth/dmarc"
 	"github.com/emersion/go-smtp"
 	"github.com/jhillyerd/enmime"
 
@@ -43,10 +47,19 @@ func NewBackend(storage *storage.Storage, apiClient *client.APIClient, cfg *conf
 }
 
 // NewSession creates a new SMTP session
-func (b *Backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
+func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
+	// Extract client IP from connection
+	clientIP := net.IP{}
+	if addr := c.Conn().RemoteAddr(); addr != nil {
+		if tcpAddr, ok := addr.(*net.TCPAddr); ok {
+			clientIP = tcpAddr.IP
+		}
+	}
+
 	return &Session{
-		backend: b,
-		logger:  b.logger,
+		backend:  b,
+		logger:   b.logger,
+		clientIP: clientIP,
 	}, nil
 }
 
@@ -63,6 +76,7 @@ type Session struct {
 	from       string
 	recipients []recipientInfo
 	logger     *slog.Logger
+	clientIP   net.IP
 }
 
 // Mail is called when the MAIL FROM command is received
@@ -145,6 +159,20 @@ func (s *Session) Data(r io.Reader) error {
 
 	emailSize := int64(len(rawEmail))
 	s.logger.Info("Received email", "from", s.from, "recipients", len(s.recipients), "size", emailSize)
+
+	// Perform email authentication validation (SPF/DKIM/DMARC)
+	cfg := s.backend.config
+	if cfg.ValidateSPF || cfg.ValidateDKIM || cfg.ValidateDMARC {
+		authResult := s.validateEmailAuth(rawEmail)
+
+		// Check if we should reject the email based on policy
+		if s.shouldRejectEmail(authResult) {
+			return &smtp.SMTPError{
+				Code:    550,
+				Message: "Email rejected: authentication failed (SPF/DKIM/DMARC)",
+			}
+		}
+	}
 
 	// Process email for each recipient (check quota first)
 	for _, rcpt := range s.recipients {
@@ -297,6 +325,164 @@ func extractEmailAddress(address string) string {
 	return strings.TrimSpace(address)
 }
 
+// extractDomain extracts the domain from an email address
+func extractDomain(email string) string {
+	parts := strings.Split(email, "@")
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return ""
+}
+
+// AuthResult holds the result of email authentication checks
+type AuthResult struct {
+	SPFResult   string // pass, fail, softfail, neutral, none, temperror, permerror
+	DKIMResult  string // pass, fail, none
+	DMARCResult string // pass, fail, none
+	SPFError    error
+	DKIMError   error
+	DMARCError  error
+}
+
+// validateEmailAuth performs SPF, DKIM, and DMARC validation
+func (s *Session) validateEmailAuth(rawEmail []byte) *AuthResult {
+	result := &AuthResult{
+		SPFResult:   "none",
+		DKIMResult:  "none",
+		DMARCResult: "none",
+	}
+
+	cfg := s.backend.config
+	senderDomain := extractDomain(s.from)
+
+	// SPF Validation
+	if cfg.ValidateSPF && senderDomain != "" && s.clientIP != nil {
+		spfResult, err := spf.CheckHostWithSender(s.clientIP, "localhost", s.from)
+		if err != nil {
+			result.SPFError = err
+			result.SPFResult = "temperror"
+			s.logger.Warn("SPF check error", "error", err, "sender", s.from, "ip", s.clientIP.String())
+		} else {
+			result.SPFResult = spfResultToString(spfResult)
+			s.logger.Info("SPF check completed", "result", result.SPFResult, "sender", s.from, "ip", s.clientIP.String())
+		}
+	}
+
+	// DKIM Validation
+	if cfg.ValidateDKIM {
+		verifications, err := dkim.Verify(bytes.NewReader(rawEmail))
+		if err != nil {
+			result.DKIMError = err
+			result.DKIMResult = "temperror"
+			s.logger.Warn("DKIM verification error", "error", err)
+		} else if len(verifications) == 0 {
+			result.DKIMResult = "none"
+			s.logger.Info("DKIM check completed", "result", "none (no signatures)")
+		} else {
+			// Check if any signature passed
+			allPassed := true
+			for _, v := range verifications {
+				if v.Err != nil {
+					allPassed = false
+					s.logger.Warn("DKIM signature failed", "domain", v.Domain, "error", v.Err)
+				} else {
+					s.logger.Info("DKIM signature passed", "domain", v.Domain)
+				}
+			}
+			if allPassed {
+				result.DKIMResult = "pass"
+			} else {
+				result.DKIMResult = "fail"
+			}
+		}
+	}
+
+	// DMARC Validation
+	if cfg.ValidateDMARC && senderDomain != "" {
+		dmarcRecord, err := dmarc.Lookup(senderDomain)
+		if err != nil {
+			if err == dmarc.ErrNoPolicy {
+				result.DMARCResult = "none"
+				s.logger.Info("DMARC check completed", "result", "none (no policy)", "domain", senderDomain)
+			} else {
+				result.DMARCError = err
+				result.DMARCResult = "temperror"
+				s.logger.Warn("DMARC lookup error", "error", err, "domain", senderDomain)
+			}
+		} else {
+			// Evaluate DMARC based on SPF and DKIM results
+			spfAligned := result.SPFResult == "pass"
+			dkimAligned := result.DKIMResult == "pass"
+
+			if spfAligned || dkimAligned {
+				result.DMARCResult = "pass"
+			} else {
+				result.DMARCResult = "fail"
+			}
+
+			s.logger.Info("DMARC check completed",
+				"result", result.DMARCResult,
+				"policy", dmarcRecord.Policy,
+				"domain", senderDomain,
+				"spf_aligned", spfAligned,
+				"dkim_aligned", dkimAligned,
+			)
+		}
+	}
+
+	return result
+}
+
+// spfResultToString converts SPF result to string
+func spfResultToString(result spf.Result) string {
+	switch result {
+	case spf.Pass:
+		return "pass"
+	case spf.Fail:
+		return "fail"
+	case spf.SoftFail:
+		return "softfail"
+	case spf.Neutral:
+		return "neutral"
+	case spf.None:
+		return "none"
+	case spf.TempError:
+		return "temperror"
+	case spf.PermError:
+		return "permerror"
+	default:
+		return "unknown"
+	}
+}
+
+// shouldRejectEmail determines if email should be rejected based on auth results and policy
+func (s *Session) shouldRejectEmail(authResult *AuthResult) bool {
+	cfg := s.backend.config
+
+	// Only reject if policy is "reject"
+	if cfg.AuthPolicy != "reject" {
+		return false
+	}
+
+	// Check each enabled validation
+	if cfg.ValidateSPF && (authResult.SPFResult == "fail" || authResult.SPFResult == "permerror") {
+		s.logger.Warn("Rejecting email due to SPF failure", "result", authResult.SPFResult)
+		return true
+	}
+
+	if cfg.ValidateDKIM && authResult.DKIMResult == "fail" {
+		s.logger.Warn("Rejecting email due to DKIM failure", "result", authResult.DKIMResult)
+		return true
+	}
+
+	if cfg.ValidateDMARC && authResult.DMARCResult == "fail" {
+		s.logger.Warn("Rejecting email due to DMARC failure", "result", authResult.DMARCResult)
+		return true
+	}
+
+	return false
+}
+
 // HealthServer provides HTTP health check endpoints
 type HealthServer struct {
 	apiClient *client.APIClient
@@ -413,6 +599,10 @@ func main() {
 		"storage_path", cfg.StoragePath,
 		"api_url", cfg.APIServiceURL,
 		"tls_enabled", cfg.TLSEnabled,
+		"validate_spf", cfg.ValidateSPF,
+		"validate_dkim", cfg.ValidateDKIM,
+		"validate_dmarc", cfg.ValidateDMARC,
+		"auth_policy", cfg.AuthPolicy,
 	)
 
 	// Ensure storage directory exists
