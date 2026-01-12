@@ -24,30 +24,96 @@ tasks:
       name: caddy
     artifacts:
       - type: put
-        content: >-
+        content: |
+          api.tmpemail.xyz {
+          	handle {
+              reverse_proxy localhost:8080
+            }
+          }
           tmpemail.xyz {
-            header Content-Type text/html
-            respond <<HTML
-              <html>
-                <head><title>tmpemail.xyz</title></head>
-                <body><a href="https://tmpemail.xyz">tmpemail.xyz</a></body>
-              </html>
-              HTML 200
+            handle /api/* {
+              reverse_proxy localhost:8080
+            }
+            handle {
+              root * /var/www/tmpemail.xyz
+              encode gzip zstd
+              try_files {path} /index.html
+              file_server
+            }
           }
         destination: /etc/caddy/Caddyfile
         constraints:
           force: true
-  - hosts:
-      - tmpemail.xyz
-    artifacts:
       - type: put
-        source: api/tmpemail-api-linux-amd64
-        destination: /root/tmpemail-api
+        source: /Users/gjergjiramku/projekte/tmpemail/frontend/dist
+        destination: /var/www/tmpemail.xyz
         constraints:
           force: true
-          executable: true
-  - hosts:
-      - tmpemail.xyz
-    systemd:
-      operation: reload
-      name: postfix
+  # - hosts:
+  #     - tmpemail.xyz
+  #   artifacts:
+  #     - type: put
+  #       source: api/tmpemail-api-linux-amd64
+  #       destination: /root/tmpemail-api
+  #       constraints:
+  #         force: true
+  #         executable: true
+  #     - type: put
+  #       source: email-service/tmpemail-email-service-linux-amd64
+  #       destination: /root/tmpemail-email-service
+  #       constraints:
+  #         force: true
+  #         executable: true
+  
+  # - hosts:
+  #     - tmpemail.xyz
+  #   systemd:
+  #     operation: install
+  #     name: tmpemail-api
+  #     description: TmpEmail API Service
+  #     env:
+  #       TMPEMAIL_ALLOWED_ORIGINS: https://tmpemail.xyz
+  #       TMPEMAIL_DB_PATH: /var/lib/tmpemail/tmpemail.db
+  #       TMPEMAIL_PORT: 8080
+  #       TMPEMAIL_DOMAIN: tmpemail.xyz
+  #       TMPEMAIL_STORAGE_PATH: /var/mail/tmpemail
+  #       TMPEMAIL_DEFAULT_EXPIRATION: 1h
+  #       TMPEMAIL_RATE_LIMIT_GENERATE: 10
+  #       TMPEMAIL_RATE_LIMIT_API: 60
+  #       TMPEMAIL_RATE_LIMIT_WS: 5
+  #       TMPEMAIL_CLEANUP_INTERVAL: 5m
+  #       TMPEMAIL_STORAGE_QUOTA: 50MB
+  #       TMPEMAIL_VALIDATE_SPF: false
+  #       TMPEMAIL_VALIDATE_DKIM: false
+  #       TMPEMAIL_VALIDATE_DMARC: false
+  #       TMPEMAIL_AUTH_POLICY: none
+  #     artifacts:
+  #       - type: put
+  #         source: api/tmpemail-api-linux-amd64
+  #         destination: ${TASK_EXEC_PATH}
+  #         constraints:
+  #           executable: true
+  #           force: true
+
+  # - hosts:
+  #     - tmpemail.xyz
+  #   systemd:
+  #     operation: install
+  #     name: tmpemail-email-service
+  #     description: TmpEmail Email Service
+  #     env:
+  #       TMPEMAIL_STORAGE_PATH: /var/mail/tmpemail
+  #       TMPEMAIL_TLS_ENABLED: true
+  #       TMPEMAIL_TLS_CERT_PATH: /var/lib/tmpemail/smtp.crt
+  #       TMPEMAIL_TLS_KEY_PATH: /var/lib/tmpemail/smtp.key
+  #       TMPEMAIL_SMTP_PORT: 25
+  #       TMPEMAIL_API_URL: http://localhost:8080
+  #     artifacts:
+  #       - type: put
+  #         source: email-service/tmpemail-email-service-linux-amd64
+  #         destination: ${TASK_EXEC_PATH}
+  #         constraints:
+  #           executable: true
+  #           force: true
+#DEV_STORAGE_PATH=./data/mail TMPEMAIL_TLS_ENABLED=true TMPEMAIL_TLS_CERT_PATH=./certs/smtp.crt TMPEMAIL_TLS_KEY_PATH=./certs/smtp.key TMPEMAIL_SMTP_PORT=25 ./tmpemail-email-service
+# TMPEMAIL_ALLOWED_ORIGINS=https://tmpemail.xyz ./tmpemail-api

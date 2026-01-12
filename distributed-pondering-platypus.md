@@ -493,3 +493,12 @@ curl -X POST http://localhost:8081/receive-email \
 - `TMPEMAIL_API_URL` - API Service URL for Email Service (default: `http://localhost:8080`)
 - `TMPEMAIL_PORT` - API Service port (default: `8080`)
 
+**Manual Test STARTTLS**
+```
+swaks --to short-sphinx-123035@tmpemail.xyz \
+      --from test@example.com \
+      --server tmpemail.xyz:25 \
+      --tls \
+      --body "Test email body" \
+      --header "Subject: Test from swaks with STARTTLS"
+```

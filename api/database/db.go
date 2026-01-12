@@ -9,7 +9,8 @@ import (
 	"tmpemail_api/models"
 
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
+	// _ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 //go:embed schema.sql
@@ -23,7 +24,7 @@ type DB struct {
 // InitDB initializes the SQLite database with the schema
 func InitDB(dbPath string) (*DB, error) {
 	// Open SQLite database
-	db, err := sqlx.Open("sqlite3", fmt.Sprintf("%s?_foreign_keys=on&_journal_mode=WAL", dbPath))
+	db, err := sqlx.Open("sqlite", fmt.Sprintf("%s?_foreign_keys=on&_journal_mode=WAL", dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

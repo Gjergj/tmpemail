@@ -21,6 +21,7 @@ dev: build
 	@mkdir -p $(DEV_DATA_DIR) $(DEV_STORAGE_PATH)
 	TMPEMAIL_DB_PATH=$(DEV_DB_PATH) \
 	TMPEMAIL_STORAGE_PATH=$(DEV_STORAGE_PATH) \
+	TMPEMAIL_ALLOWED_ORIGINS=http://localhost:5173 \
 	./$(BINARY_NAME)
 
 # Clean build artifacts
