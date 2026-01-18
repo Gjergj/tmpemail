@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import { Home } from './pages/Home';
 import { Blog } from './pages/Blog';
 import { BlogPost } from './pages/BlogPost';
+import { API } from './pages/API';
 
 function App() {
   return (
@@ -32,6 +33,17 @@ function App() {
               >
                 Blog
               </NavLink>
+              <NavLink
+                to="/api"
+                className={({ isActive }) =>
+                  `text-sm font-medium transition-colors ${isActive
+                    ? 'text-slate-800'
+                    : 'text-slate-400 hover:text-slate-600'
+                  }`
+                }
+              >
+                API
+              </NavLink>
             </div>
             <a
               href="https://x.com/gjergjiramku"
@@ -56,6 +68,7 @@ function App() {
             <Route path="/" element={<Home />} />
             <Route path="/blog" element={<Blog />} />
             <Route path="/blog/:slug" element={<BlogPost />} />
+            <Route path="/api" element={<API />} />
           </Routes>
         </div>
       </div>
