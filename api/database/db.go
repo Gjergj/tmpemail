@@ -229,3 +229,45 @@ func (db *DB) GetStorageUsedByAddress(address string) (int64, error) {
 
 	return emailSize + attachmentSize, nil
 }
+
+// EmailFilter represents filter criteria for email queries
+type EmailFilter struct {
+	FromAddress     string
+	SubjectContains string
+	Since           *time.Time
+}
+
+// GetEmailsByFilter retrieves emails for a given address with optional filters, ordered by received_at DESC
+func (db *DB) GetEmailsByFilter(address string, filter EmailFilter) ([]*models.Email, error) {
+	query := `SELECT id, to_address, from_address, subject, body_preview, body_text, body_html, file_path, received_at
+	          FROM emails WHERE to_address = ?`
+
+	args := []interface{}{address}
+
+	// Add from_address filter if provided
+	if filter.FromAddress != "" {
+		query += " AND from_address = ?"
+		args = append(args, filter.FromAddress)
+	}
+
+	// Add subject filter if provided (case-insensitive LIKE)
+	if filter.SubjectContains != "" {
+		query += " AND subject LIKE ?"
+		args = append(args, "%"+filter.SubjectContains+"%")
+	}
+
+	// Add since filter if provided
+	if filter.Since != nil {
+		query += " AND received_at >= ?"
+		args = append(args, filter.Since)
+	}
+
+	query += " ORDER BY received_at DESC"
+
+	var emails []*models.Email
+	err := db.Select(&emails, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query emails with filters: %w", err)
+	}
+	return emails, nil
+}

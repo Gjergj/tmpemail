@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/microcosm-cc/bluemonday"
@@ -105,6 +106,86 @@ func (h *EmailHandler) GetEmails(w http.ResponseWriter, r *http.Request) {
 	emails, err := h.db.GetEmailsByAddress(address)
 	if err != nil {
 		h.logger.Error("Failed to get emails", "error", err, "address", address)
+		http.Error(w, "Failed to retrieve emails", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to summaries
+	summaries := make([]EmailSummary, 0, len(emails))
+	for _, email := range emails {
+		// Check if email has attachments
+		attachments, _ := h.db.GetAttachmentsByEmailID(email.ID)
+		hasAttachments := len(attachments) > 0
+
+		summaries = append(summaries, EmailSummary{
+			ID:             email.ID,
+			From:           email.FromAddress,
+			Subject:        email.Subject,
+			Preview:        email.BodyPreview,
+			ReceivedAt:     email.ReceivedAt.Format("2006-01-02T15:04:05Z07:00"),
+			HasAttachments: hasAttachments,
+		})
+	}
+
+	response := EmailListResponse{Emails: summaries}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// GetEmailsFiltered handles GET /api/v1/emails/{address}/filter - retrieves emails with filters
+func (h *EmailHandler) GetEmailsFiltered(w http.ResponseWriter, r *http.Request) {
+	address := chi.URLParam(r, "address")
+	if address == "" {
+		http.Error(w, "Missing address parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Validate address exists and is not expired
+	valid, expired, err := h.db.IsValidAddress(address)
+	if err != nil {
+		h.logger.Error("Failed to validate address", "error", err, "address", address)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if !valid {
+		http.Error(w, "Email address not found", http.StatusNotFound)
+		return
+	}
+
+	if expired {
+		http.Error(w, "Email address has expired", http.StatusGone)
+		return
+	}
+
+	// Parse query parameters
+	filter := database.EmailFilter{}
+
+	// from parameter
+	if from := r.URL.Query().Get("from"); from != "" {
+		filter.FromAddress = from
+	}
+
+	// subject parameter (contains)
+	if subject := r.URL.Query().Get("subject"); subject != "" {
+		filter.SubjectContains = subject
+	}
+
+	// since parameter (RFC3339 format: 2006-01-02T15:04:05Z07:00)
+	if since := r.URL.Query().Get("since"); since != "" {
+		sinceTime, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			http.Error(w, "Invalid since parameter. Use RFC3339 format (e.g., 2006-01-02T15:04:05Z)", http.StatusBadRequest)
+			return
+		}
+		filter.Since = &sinceTime
+	}
+
+	// Get filtered emails
+	emails, err := h.db.GetEmailsByFilter(address, filter)
+	if err != nil {
+		h.logger.Error("Failed to get filtered emails", "error", err, "address", address, "filter", filter)
 		http.Error(w, "Failed to retrieve emails", http.StatusInternalServerError)
 		return
 	}

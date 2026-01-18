@@ -37,4 +37,6 @@ CREATE INDEX IF NOT EXISTS idx_email_addresses_address ON email_addresses(addres
 CREATE INDEX IF NOT EXISTS idx_email_addresses_expires_at ON email_addresses(expires_at);
 CREATE INDEX IF NOT EXISTS idx_emails_to_address ON emails(to_address);
 CREATE INDEX IF NOT EXISTS idx_emails_to_address_received_at ON emails(to_address, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_emails_from_address ON emails(from_address);
+CREATE INDEX IF NOT EXISTS idx_emails_received_at ON emails(received_at);
 CREATE INDEX IF NOT EXISTS idx_attachments_email_id ON attachments(email_id);

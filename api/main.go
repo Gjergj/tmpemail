@@ -120,6 +120,7 @@ func main() {
 
 		// Email endpoints with standard rate limiting
 		r.With(apiRateLimiter.Middleware).Get("/emails/{address}", emailHandler.GetEmails)
+		r.With(apiRateLimiter.Middleware).Get("/emails/{address}/filter", emailHandler.GetEmailsFiltered)
 		r.With(apiRateLimiter.Middleware).Get("/email/{address}/{emailID}", emailHandler.GetEmailContent)
 		r.With(apiRateLimiter.Middleware).Get("/email/{address}/{emailID}/attachments", emailHandler.GetAttachments)
 		r.With(apiRateLimiter.Middleware).Get("/email/{address}/{emailID}/attachments/{attachmentID}", emailHandler.DownloadAttachment)

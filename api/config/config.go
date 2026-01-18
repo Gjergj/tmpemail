@@ -46,7 +46,7 @@ func Load() *Config {
 		Port:                   getEnv("TMPEMAIL_PORT", "8080"),
 		EmailDomain:            getEnv("TMPEMAIL_DOMAIN", "tmpemail.xyz"),
 		StoragePath:            getEnv("TMPEMAIL_STORAGE_PATH", "/var/mail/tmpemail"),
-		DefaultExpiration:      getDurationEnv("TMPEMAIL_DEFAULT_EXPIRATION", 24*time.Hour),
+		DefaultExpiration:      getDurationEnv("TMPEMAIL_DEFAULT_EXPIRATION", 1*time.Hour),
 		RateLimitGenerate:      getIntEnv("TMPEMAIL_RATE_LIMIT_GENERATE", 10), // 10 req/min for generate
 		RateLimitAPI:           getIntEnv("TMPEMAIL_RATE_LIMIT_API", 60),      // 60 req/min for email retrieval
 		RateLimitWS:            getIntEnv("TMPEMAIL_RATE_LIMIT_WS", 5),        // 5 connections/min for WebSocket
