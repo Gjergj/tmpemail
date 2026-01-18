@@ -82,13 +82,20 @@ type Session struct {
 // Mail is called when the MAIL FROM command is received
 func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
 	s.from = from
-	s.logger.Info("MAIL FROM", "from", from)
+	s.logger.Info("MAIL FROM received",
+		"from", from,
+		"client_ip", s.clientIP.String(),
+	)
 	return nil
 }
 
 // Rcpt is called when RCPT TO command is received
 func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
-	s.logger.Info("RCPT TO", "to", to)
+	s.logger.Info("RCPT TO received",
+		"to", to,
+		"from", s.from,
+		"client_ip", s.clientIP.String(),
+	)
 
 	// Extract email address from angle brackets if present
 	address := extractEmailAddress(to)
@@ -96,7 +103,13 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	// Validate address with API Service
 	validation, err := s.backend.apiClient.ValidateAddress(address)
 	if err != nil {
-		s.logger.Error("Failed to validate address", "error", err, "address", address)
+		s.logger.Error("SMTP REJECT: Failed to validate address with API",
+			"error", err,
+			"address", address,
+			"from", s.from,
+			"client_ip", s.clientIP.String(),
+			"smtp_code", 451,
+		)
 		return &smtp.SMTPError{
 			Code:    451,
 			Message: "Temporary failure validating address",
@@ -104,7 +117,12 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	}
 
 	if !validation.Valid {
-		s.logger.Warn("Invalid email address", "address", address)
+		s.logger.Warn("SMTP REJECT: Invalid email address (not found)",
+			"address", address,
+			"from", s.from,
+			"client_ip", s.clientIP.String(),
+			"smtp_code", 550,
+		)
 		return &smtp.SMTPError{
 			Code:    550,
 			Message: "Recipient address rejected: User unknown",
@@ -112,12 +130,23 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	}
 
 	if validation.Expired {
-		s.logger.Warn("Expired email address", "address", address)
+		s.logger.Warn("SMTP REJECT: Expired email address",
+			"address", address,
+			"from", s.from,
+			"client_ip", s.clientIP.String(),
+			"smtp_code", 550,
+		)
 		return &smtp.SMTPError{
 			Code:    550,
 			Message: "Recipient address rejected: Address expired",
 		}
 	}
+
+	s.logger.Info("Recipient accepted",
+		"address", address,
+		"storage_used", validation.StorageUsed,
+		"storage_quota", validation.StorageQuota,
+	)
 
 	// Store recipient with quota info
 	s.recipients = append(s.recipients, recipientInfo{
@@ -131,17 +160,34 @@ func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
 // Data is called when the DATA command is received
 func (s *Session) Data(r io.Reader) error {
 	if len(s.recipients) == 0 {
+		s.logger.Warn("SMTP REJECT: No valid recipients",
+			"from", s.from,
+			"client_ip", s.clientIP.String(),
+			"smtp_code", 554,
+		)
 		return &smtp.SMTPError{
 			Code:    554,
 			Message: "No valid recipients",
 		}
 	}
 
+	s.logger.Info("DATA command received, reading email content",
+		"from", s.from,
+		"recipients", len(s.recipients),
+		"client_ip", s.clientIP.String(),
+	)
+
 	// Read email data with size limit
 	limitReader := io.LimitReader(r, int64(s.backend.config.MaxEmailSize))
 	rawEmail, err := io.ReadAll(limitReader)
 	if err != nil {
-		s.logger.Error("Failed to read email data", "error", err)
+		s.logger.Error("SMTP REJECT: Failed to read email data",
+			"error", err,
+			"from", s.from,
+			"recipients", len(s.recipients),
+			"client_ip", s.clientIP.String(),
+			"smtp_code", 451,
+		)
 		return &smtp.SMTPError{
 			Code:    451,
 			Message: "Failed to read email data",
@@ -150,7 +196,18 @@ func (s *Session) Data(r io.Reader) error {
 
 	// Check if email exceeds size limit
 	if len(rawEmail) >= s.backend.config.MaxEmailSize {
-		s.logger.Warn("Email exceeds size limit", "size", len(rawEmail))
+		recipientAddrs := make([]string, len(s.recipients))
+		for i, r := range s.recipients {
+			recipientAddrs[i] = r.address
+		}
+		s.logger.Warn("SMTP REJECT: Email exceeds size limit",
+			"size", len(rawEmail),
+			"max_size", s.backend.config.MaxEmailSize,
+			"from", s.from,
+			"to", recipientAddrs,
+			"client_ip", s.clientIP.String(),
+			"smtp_code", 552,
+		)
 		return &smtp.SMTPError{
 			Code:    552,
 			Message: "Email exceeds maximum size (20MB)",
@@ -158,7 +215,17 @@ func (s *Session) Data(r io.Reader) error {
 	}
 
 	emailSize := int64(len(rawEmail))
-	s.logger.Info("Received email", "from", s.from, "recipients", len(s.recipients), "size", emailSize)
+	recipientAddrs := make([]string, len(s.recipients))
+	for i, r := range s.recipients {
+		recipientAddrs[i] = r.address
+	}
+	s.logger.Info("Email data received successfully",
+		"from", s.from,
+		"to", recipientAddrs,
+		"recipients_count", len(s.recipients),
+		"size_bytes", emailSize,
+		"client_ip", s.clientIP.String(),
+	)
 
 	// Perform email authentication validation (SPF/DKIM/DMARC)
 	cfg := s.backend.config
@@ -167,6 +234,16 @@ func (s *Session) Data(r io.Reader) error {
 
 		// Check if we should reject the email based on policy
 		if s.shouldRejectEmail(authResult) {
+			s.logger.Warn("SMTP REJECT: Email authentication failed",
+				"from", s.from,
+				"to", recipientAddrs,
+				"client_ip", s.clientIP.String(),
+				"spf_result", authResult.SPFResult,
+				"dkim_result", authResult.DKIMResult,
+				"dmarc_result", authResult.DMARCResult,
+				"policy", cfg.AuthPolicy,
+				"smtp_code", 550,
+			)
 			return &smtp.SMTPError{
 				Code:    550,
 				Message: "Email rejected: authentication failed (SPF/DKIM/DMARC)",
@@ -175,49 +252,99 @@ func (s *Session) Data(r io.Reader) error {
 	}
 
 	// Process email for each recipient (check quota first)
+	successCount := 0
 	for _, rcpt := range s.recipients {
 		// Check storage quota (0 = unlimited)
 		if rcpt.storageQuota > 0 && rcpt.storageUsed+emailSize > rcpt.storageQuota {
-			s.logger.Warn("Storage quota exceeded for recipient",
+			s.logger.Warn("SMTP WARN: Storage quota exceeded for recipient, skipping",
 				"address", rcpt.address,
-				"used", rcpt.storageUsed,
-				"quota", rcpt.storageQuota,
+				"storage_used", rcpt.storageUsed,
+				"storage_quota", rcpt.storageQuota,
 				"email_size", emailSize,
+				"would_use", rcpt.storageUsed+emailSize,
+				"from", s.from,
+				"client_ip", s.clientIP.String(),
 			)
 			// Skip this recipient but continue with others
 			continue
 		}
 
 		if err := s.processEmail(rcpt.address, rawEmail); err != nil {
-			s.logger.Error("Failed to process email", "error", err, "to", rcpt.address)
+			s.logger.Error("Failed to process email for recipient",
+				"error", err,
+				"to", rcpt.address,
+				"from", s.from,
+				"client_ip", s.clientIP.String(),
+			)
 			// Continue processing other recipients even if one fails
+		} else {
+			successCount++
 		}
 	}
+
+	s.logger.Info("Email processing completed",
+		"from", s.from,
+		"total_recipients", len(s.recipients),
+		"successful", successCount,
+		"failed", len(s.recipients)-successCount,
+		"client_ip", s.clientIP.String(),
+	)
 
 	return nil
 }
 
 // processEmail handles storing and notifying the API about a new email
 func (s *Session) processEmail(toAddress string, rawEmail []byte) error {
+	s.logger.Info("Processing email for recipient",
+		"to", toAddress,
+		"from", s.from,
+		"size_bytes", len(rawEmail),
+	)
+
 	// Save email to filesystem
 	filePath, err := s.backend.storage.SaveEmail(toAddress, rawEmail)
 	if err != nil {
+		s.logger.Error("Failed to save email to filesystem",
+			"error", err,
+			"to", toAddress,
+			"from", s.from,
+			"size_bytes", len(rawEmail),
+		)
 		return fmt.Errorf("failed to save email: %w", err)
 	}
 
-	s.logger.Info("Email saved to filesystem", "path", filePath, "to", toAddress)
+	s.logger.Info("Email saved to filesystem",
+		"path", filePath,
+		"to", toAddress,
+		"from", s.from,
+	)
 
 	// Parse email using enmime - much more robust MIME parsing
 	env, err := enmime.ReadEnvelope(bytes.NewReader(rawEmail))
 	if err != nil {
-		s.logger.Warn("Failed to parse email with enmime", "error", err)
+		s.logger.Warn("Failed to parse email with enmime",
+			"error", err,
+			"to", toAddress,
+			"from", s.from,
+		)
 		// Create empty envelope for fallback
 		env = &enmime.Envelope{}
 	}
 
 	// Log any parsing errors (enmime captures them instead of failing)
-	for _, parseErr := range env.Errors {
-		s.logger.Warn("MIME parsing issue", "error", parseErr.String())
+	if len(env.Errors) > 0 {
+		s.logger.Warn("MIME parsing encountered issues",
+			"error_count", len(env.Errors),
+			"to", toAddress,
+			"from", s.from,
+		)
+		for i, parseErr := range env.Errors {
+			s.logger.Debug("MIME parsing issue detail",
+				"issue_number", i+1,
+				"error", parseErr.String(),
+				"to", toAddress,
+			)
+		}
 	}
 
 	// Extract email components - enmime handles charset decoding automatically
@@ -239,6 +366,12 @@ func (s *Session) processEmail(toAddress string, rawEmail []byte) error {
 	emailFilename := filepath.Base(filePath)
 
 	// Process regular attachments
+	s.logger.Info("Processing attachments",
+		"attachment_count", len(env.Attachments),
+		"inline_count", len(env.Inlines),
+		"to", toAddress,
+	)
+
 	for _, att := range env.Attachments {
 		filename := att.FileName
 		if filename == "" {
@@ -246,14 +379,27 @@ func (s *Session) processEmail(toAddress string, rawEmail []byte) error {
 		}
 		attPath, err := s.backend.storage.SaveAttachment(emailFilename, filename, att.Content)
 		if err != nil {
-			s.logger.Error("Failed to save attachment", "error", err, "filename", filename)
+			s.logger.Error("Failed to save attachment",
+				"error", err,
+				"filename", filename,
+				"size_bytes", len(att.Content),
+				"content_type", att.ContentType,
+				"to", toAddress,
+				"from", s.from,
+			)
 			continue
 		}
 		attachmentPaths = append(attachmentPaths, attPath)
 		attachmentNames = append(attachmentNames, filename)
 		attachmentSizes = append(attachmentSizes, int64(len(att.Content)))
 
-		s.logger.Info("Attachment saved", "path", attPath, "filename", filename, "content_type", att.ContentType)
+		s.logger.Info("Attachment saved successfully",
+			"path", attPath,
+			"filename", filename,
+			"size_bytes", len(att.Content),
+			"content_type", att.ContentType,
+			"to", toAddress,
+		)
 	}
 
 	// Process inline attachments (images embedded in HTML, etc.)
@@ -264,14 +410,27 @@ func (s *Session) processEmail(toAddress string, rawEmail []byte) error {
 		}
 		attPath, err := s.backend.storage.SaveAttachment(emailFilename, filename, att.Content)
 		if err != nil {
-			s.logger.Error("Failed to save inline attachment", "error", err, "filename", filename)
+			s.logger.Error("Failed to save inline attachment",
+				"error", err,
+				"filename", filename,
+				"size_bytes", len(att.Content),
+				"content_id", att.ContentID,
+				"to", toAddress,
+				"from", s.from,
+			)
 			continue
 		}
 		attachmentPaths = append(attachmentPaths, attPath)
 		attachmentNames = append(attachmentNames, filename)
 		attachmentSizes = append(attachmentSizes, int64(len(att.Content)))
 
-		s.logger.Info("Inline attachment saved", "path", attPath, "filename", filename, "content_id", att.ContentID)
+		s.logger.Info("Inline attachment saved successfully",
+			"path", attPath,
+			"filename", filename,
+			"size_bytes", len(att.Content),
+			"content_id", att.ContentID,
+			"to", toAddress,
+		)
 	}
 
 	// Store email via API
@@ -289,25 +448,54 @@ func (s *Session) processEmail(toAddress string, rawEmail []byte) error {
 		AttachmentSizes: attachmentSizes,
 	}
 
+	s.logger.Info("Storing email metadata via API",
+		"to", toAddress,
+		"from", fromHeader,
+		"subject", subject,
+		"attachment_count", len(attachmentPaths),
+	)
+
 	resp, err := s.backend.apiClient.StoreEmail(toAddress, storeReq)
 	if err != nil {
 		// Just log the error, don't break the operation - email is already saved to filesystem
-		s.logger.Error("Failed to store email via API (email saved to filesystem)", "error", err, "to", toAddress, "file_path", filePath)
+		s.logger.Error("Failed to store email metadata via API (email saved to filesystem)",
+			"error", err,
+			"to", toAddress,
+			"from", fromHeader,
+			"subject", subject,
+			"file_path", filePath,
+			"client_ip", s.clientIP.String(),
+		)
 		return nil
 	}
 
-	s.logger.Info("Email stored successfully", "to", toAddress, "email_id", resp.EmailID)
+	s.logger.Info("Email stored successfully in database",
+		"to", toAddress,
+		"from", fromHeader,
+		"subject", subject,
+		"email_id", resp.EmailID,
+		"file_path", filePath,
+		"attachment_count", len(attachmentPaths),
+	)
 	return nil
 }
 
 // Reset is called when RSET command is received
 func (s *Session) Reset() {
+	s.logger.Info("RSET command received, resetting session",
+		"client_ip", s.clientIP.String(),
+		"previous_from", s.from,
+		"previous_recipients", len(s.recipients),
+	)
 	s.from = ""
 	s.recipients = nil
 }
 
 // Logout is called when the session is closed
 func (s *Session) Logout() error {
+	s.logger.Info("Session closed",
+		"client_ip", s.clientIP.String(),
+	)
 	return nil
 }
 
@@ -461,24 +649,53 @@ func (s *Session) shouldRejectEmail(authResult *AuthResult) bool {
 
 	// Only reject if policy is "reject"
 	if cfg.AuthPolicy != "reject" {
+		s.logger.Info("Email authentication checked (policy: log only)",
+			"policy", cfg.AuthPolicy,
+			"spf_result", authResult.SPFResult,
+			"dkim_result", authResult.DKIMResult,
+			"dmarc_result", authResult.DMARCResult,
+			"from", s.from,
+		)
 		return false
 	}
 
 	// Check each enabled validation
 	if cfg.ValidateSPF && (authResult.SPFResult == "fail" || authResult.SPFResult == "permerror") {
-		s.logger.Warn("Rejecting email due to SPF failure", "result", authResult.SPFResult)
+		s.logger.Warn("Rejecting email due to SPF failure",
+			"result", authResult.SPFResult,
+			"from", s.from,
+			"client_ip", s.clientIP.String(),
+			"spf_error", authResult.SPFError,
+		)
 		return true
 	}
 
 	if cfg.ValidateDKIM && authResult.DKIMResult == "fail" {
-		s.logger.Warn("Rejecting email due to DKIM failure", "result", authResult.DKIMResult)
+		s.logger.Warn("Rejecting email due to DKIM failure",
+			"result", authResult.DKIMResult,
+			"from", s.from,
+			"client_ip", s.clientIP.String(),
+			"dkim_error", authResult.DKIMError,
+		)
 		return true
 	}
 
 	if cfg.ValidateDMARC && authResult.DMARCResult == "fail" {
-		s.logger.Warn("Rejecting email due to DMARC failure", "result", authResult.DMARCResult)
+		s.logger.Warn("Rejecting email due to DMARC failure",
+			"result", authResult.DMARCResult,
+			"from", s.from,
+			"client_ip", s.clientIP.String(),
+			"dmarc_error", authResult.DMARCError,
+		)
 		return true
 	}
+
+	s.logger.Info("Email authentication passed",
+		"spf_result", authResult.SPFResult,
+		"dkim_result", authResult.DKIMResult,
+		"dmarc_result", authResult.DMARCResult,
+		"from", s.from,
+	)
 
 	return false
 }
